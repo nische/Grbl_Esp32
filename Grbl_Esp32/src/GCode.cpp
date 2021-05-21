@@ -494,9 +494,7 @@ Error gc_execute_line(char* line, uint8_t client) {
                         break;
                     case 6:  // tool change
                         gc_block.modal.tool_change = ToolChange::Enable;
-#ifdef USE_TOOL_CHANGE
                         //user_tool_change(gc_state.tool);
-#endif
                         mg_word_bit = ModalGroup::MM6;
                         break;
                     case 7:
@@ -1287,14 +1285,16 @@ Error gc_execute_line(char* line, uint8_t client) {
             FAIL(Error::InvalidJogCommand);
         }
         // Initialize planner data to current spindle and coolant modal state.
-        pl_data->spindle_speed = gc_state.spindle_speed;
-        pl_data->spindle       = gc_state.modal.spindle;
-        pl_data->coolant       = gc_state.modal.coolant;
-        Error status           = jog_execute(pl_data, &gc_block);
-        if (status == Error::Ok) {
+        pl_data->spindle_speed  = gc_state.spindle_speed;
+        pl_data->spindle        = gc_state.modal.spindle;
+        pl_data->coolant        = gc_state.modal.coolant;
+        bool  cancelledInflight = false;
+        Error status            = jog_execute(pl_data, &gc_block, &cancelledInflight);
+        if (status == Error::Ok && !cancelledInflight) {
             memcpy(gc_state.position, gc_block.values.xyz, sizeof(gc_block.values.xyz));
         }
-        return status;
+        // JogCancelled is not reported as a GCode error
+        return status == Error::JogCancelled ? Error::Ok : status;
     }
     // If in laser mode, setup laser power based on current and past parser conditions.
     if (spindle->inLaserMode()) {
@@ -1361,9 +1361,7 @@ Error gc_execute_line(char* line, uint8_t client) {
     //	gc_state.tool = gc_block.values.t;
     // [6. Change tool ]: NOT SUPPORTED
     if (gc_block.modal.tool_change == ToolChange::Enable) {
-#ifdef USE_TOOL_CHANGE
         user_tool_change(gc_state.tool);
-#endif
     }
     // [7. Spindle control ]:
     if (gc_state.modal.spindle != gc_block.modal.spindle) {
@@ -1401,10 +1399,11 @@ Error gc_execute_line(char* line, uint8_t client) {
     if ((gc_block.modal.io_control == IoControl::DigitalOnSync) || (gc_block.modal.io_control == IoControl::DigitalOffSync) ||
         (gc_block.modal.io_control == IoControl::DigitalOnImmediate) || (gc_block.modal.io_control == IoControl::DigitalOffImmediate)) {
         if (gc_block.values.p < MaxUserDigitalPin) {
-            if (!sys_io_control(
-                    bit((int)gc_block.values.p),
-                    (gc_block.modal.io_control == IoControl::DigitalOnSync) || (gc_block.modal.io_control == IoControl::DigitalOnImmediate),
-                    (gc_block.modal.io_control == IoControl::DigitalOnSync) || (gc_block.modal.io_control == IoControl::DigitalOffSync))) {
+            if ((gc_block.modal.io_control == IoControl::DigitalOnSync) || (gc_block.modal.io_control == IoControl::DigitalOffSync)) {
+                protocol_buffer_synchronize();
+            }
+            bool turnOn = gc_block.modal.io_control == IoControl::DigitalOnSync || gc_block.modal.io_control == IoControl::DigitalOnImmediate;
+            if (!sys_set_digital((int)gc_block.values.p, turnOn)) {
                 FAIL(Error::PParamMaxExceeded);
             }
         } else {
@@ -1414,8 +1413,12 @@ Error gc_execute_line(char* line, uint8_t client) {
     if ((gc_block.modal.io_control == IoControl::SetAnalogSync) || (gc_block.modal.io_control == IoControl::SetAnalogImmediate)) {
         if (gc_block.values.e < MaxUserDigitalPin) {
             gc_block.values.q = constrain(gc_block.values.q, 0.0, 100.0);  // force into valid range
-            if (!sys_pwm_control(bit((int)gc_block.values.e), gc_block.values.q, (gc_block.modal.io_control == IoControl::SetAnalogSync)))
+            if (gc_block.modal.io_control == IoControl::SetAnalogSync) {
+                protocol_buffer_synchronize();
+            }
+            if (!sys_set_analog((int)gc_block.values.e, gc_block.values.q)) {
                 FAIL(Error::PParamMaxExceeded);
+            }
         } else {
             FAIL(Error::PParamMaxExceeded);
         }
@@ -1430,7 +1433,7 @@ Error gc_execute_line(char* line, uint8_t client) {
 #endif
     // [10. Dwell ]:
     if (gc_block.non_modal_command == NonModal::Dwell) {
-        mc_dwell(gc_block.values.p);
+        mc_dwell(int32_t(gc_block.values.p * 1000.0f));
     }
     // [11. Set active plane ]:
     gc_state.modal.plane_select = gc_block.modal.plane_select;
@@ -1480,9 +1483,9 @@ Error gc_execute_line(char* line, uint8_t client) {
             // and absolute and incremental modes.
             pl_data->motion.rapidMotion = 1;  // Set rapid motion flag.
             if (axis_command != AxisCommand::None) {
-                mc_line_kins(gc_block.values.xyz, pl_data, gc_state.position);
+                cartesian_to_motors(gc_block.values.xyz, pl_data, gc_state.position);
             }
-            mc_line_kins(coord_data, pl_data, gc_state.position);
+            cartesian_to_motors(coord_data, pl_data, gc_state.position);
             memcpy(gc_state.position, coord_data, sizeof(gc_state.position));
             break;
         case NonModal::SetHome0:
@@ -1510,12 +1513,10 @@ Error gc_execute_line(char* line, uint8_t client) {
         if (axis_command == AxisCommand::MotionMode) {
             GCUpdatePos gc_update_pos = GCUpdatePos::Target;
             if (gc_state.modal.motion == Motion::Linear) {
-                //mc_line(gc_block.values.xyz, pl_data);
-                mc_line_kins(gc_block.values.xyz, pl_data, gc_state.position);
+                cartesian_to_motors(gc_block.values.xyz, pl_data, gc_state.position);
             } else if (gc_state.modal.motion == Motion::Seek) {
                 pl_data->motion.rapidMotion = 1;  // Set rapid motion flag.
-                //mc_line(gc_block.values.xyz, pl_data);
-                mc_line_kins(gc_block.values.xyz, pl_data, gc_state.position);
+                cartesian_to_motors(gc_block.values.xyz, pl_data, gc_state.position);
             } else if ((gc_state.modal.motion == Motion::CwArc) || (gc_state.modal.motion == Motion::CcwArc)) {
                 mc_arc(gc_block.values.xyz,
                        pl_data,
@@ -1599,9 +1600,7 @@ Error gc_execute_line(char* line, uint8_t client) {
                 coolant_off();
             }
             report_feedback_message(Message::ProgramEnd);
-#ifdef USE_M30
             user_m30();
-#endif
             break;
     }
     gc_state.modal.program_flow = ProgramFlow::Running;  // Reset program flow.

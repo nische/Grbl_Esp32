@@ -302,11 +302,11 @@ namespace WebUI {
         }
         if (!SPIFFS.exists(path)) {
             webPrintln("Error: No such file!");
-            return Error::SdFileNotFound;
+            return Error::FsFileNotFound;
         }
         File currentfile = SPIFFS.open(path, FILE_READ);
         if (!currentfile) {  //if file open success
-            return Error::SdFailedOpenFile;
+            return Error::FsFailedOpenFile;
         }
         //until no line in file
         Error   err;
@@ -338,11 +338,11 @@ namespace WebUI {
         }
         if (!SPIFFS.exists(path)) {
             webPrintln("Error: No such file!");
-            return Error::SdFileNotFound;
+            return Error::FsFileNotFound;
         }
         File currentfile = SPIFFS.open(path, FILE_READ);
         if (!currentfile) {
-            return Error::SdFailedOpenFile;
+            return Error::FsFailedOpenFile;
         }
         while (currentfile.available()) {
             // String currentline = currentfile.readStringUntil('\n');
@@ -466,7 +466,7 @@ namespace WebUI {
                     webPrintln("Signal: ", String(wifi_config.getSignal(WiFi.RSSI())) + "%");
 
                     uint8_t PhyMode;
-                    esp_wifi_get_protocol(ESP_IF_WIFI_STA, &PhyMode);
+                    esp_wifi_get_protocol(WIFI_IF_STA, &PhyMode);
                     const char* modeName;
                     switch (PhyMode) {
                         case WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N:
@@ -501,7 +501,7 @@ namespace WebUI {
                 print_mac("AP", WiFi.softAPmacAddress());
 
                 wifi_config_t conf;
-                esp_wifi_get_config(ESP_IF_WIFI_AP, &conf);
+                esp_wifi_get_config(WIFI_IF_AP, &conf);
                 webPrintln("SSID: ", (const char*)conf.ap.ssid);
                 webPrintln("Visible: ", (conf.ap.ssid_hidden == 0) ? "Yes" : "No");
 
@@ -682,20 +682,20 @@ namespace WebUI {
         if (path[0] != '/') {
             path = "/" + path;
         }
-        int8_t state = get_sd_state(true);
-        if (state != SDCARD_IDLE) {
-            if (state == SDCARD_NOT_PRESENT) {
+        SDState state = get_sd_state(true);
+        if (state != SDState::Idle) {
+            if (state == SDState::NotPresent) {
                 webPrintln("No SD Card");
-                return Error::SdFailedMount;
+                return Error::FsFailedMount;
             } else {
                 webPrintln("SD Card Busy");
-                return Error::SdFailedBusy;
+                return Error::FsFailedBusy;
             }
         }
         if (!openFile(SD, path.c_str())) {
-            report_status_message(Error::SdFailedRead, (espresponse) ? espresponse->client() : CLIENT_ALL);
+            report_status_message(Error::FsFailedRead, (espresponse) ? espresponse->client() : CLIENT_ALL);
             webPrintln("");
-            return Error::SdFailedOpenFile;
+            return Error::FsFailedOpenFile;
         }
         return Error::Ok;
     }
@@ -752,9 +752,9 @@ namespace WebUI {
             webPrintln("Missing file name!");
             return Error::InvalidValue;
         }
-        int8_t state = get_sd_state(true);
-        if (state != SDCARD_IDLE) {
-            webPrintln((state == SDCARD_NOT_PRESENT) ? "No SD card" : "Busy");
+        SDState state = get_sd_state(true);
+        if (state != SDState::Idle) {
+            webPrintln((state == SDState::NotPresent) ? "No SD card" : "Busy");
             return Error::Ok;
         }
         String path = parameter;
@@ -764,18 +764,18 @@ namespace WebUI {
         File file2del = SD.open(path);
         if (!file2del) {
             webPrintln("Cannot stat file!");
-            return Error::SdFileNotFound;
+            return Error::FsFileNotFound;
         }
         if (file2del.isDirectory()) {
             if (!SD.rmdir(path)) {
                 webPrintln("Cannot delete directory! Is directory empty?");
-                return Error::SdFailedDelDir;
+                return Error::FsFailedDelDir;
             }
             webPrintln("Directory deleted.");
         } else {
             if (!SD.remove(path)) {
                 webPrintln("Cannot delete file!");
-                return Error::SdFailedDelFile;
+                return Error::FsFailedDelFile;
             }
             webPrintln("File deleted.");
         }
@@ -784,14 +784,14 @@ namespace WebUI {
     }
 
     static Error listSDFiles(char* parameter, AuthenticationLevel auth_level) {  // ESP210
-        int8_t state = get_sd_state(true);
-        if (state != SDCARD_IDLE) {
-            if (state == SDCARD_NOT_PRESENT) {
+        SDState state = get_sd_state(true);
+        if (state != SDState::Idle) {
+            if (state == SDState::NotPresent) {
                 webPrintln("No SD Card");
-                return Error::SdFailedMount;
+                return Error::FsFailedMount;
             } else {
                 webPrintln("SD Card Busy");
-                return Error::SdFailedBusy;
+                return Error::FsFailedBusy;
             }
         }
         webPrintln("");
@@ -806,9 +806,35 @@ namespace WebUI {
     }
 #endif
 
+    void listDirLocalFS(fs::FS& fs, const char* dirname, uint8_t levels, uint8_t client) {
+        //char temp_filename[128]; // to help filter by extension	TODO: 128 needs a definition based on something
+        File root = fs.open(dirname);
+        if (!root) {
+            //FIXME: need proper error for FS and not usd sd one
+            report_status_message(Error::FsFailedOpenDir, client);
+            return;
+        }
+        if (!root.isDirectory()) {
+            //FIXME: need proper error for FS and not usd sd one
+            report_status_message(Error::FsDirNotFound, client);
+            return;
+        }
+        File file = root.openNextFile();
+        while (file) {
+            if (file.isDirectory()) {
+                if (levels) {
+                    listDirLocalFS(fs, file.name(), levels - 1, client);
+                }
+            } else {
+                grbl_sendf(CLIENT_ALL, "[FILE:%s|SIZE:%d]\r\n", file.name(), file.size());
+            }
+            file = root.openNextFile();
+        }
+    }
+
     static Error listLocalFiles(char* parameter, AuthenticationLevel auth_level) {  // No ESP command
         webPrintln("");
-        listDir(SPIFFS, "/", 10, espresponse->client());
+        listDirLocalFS(SPIFFS, "/", 10, espresponse->client());
         String ssd = "[Local FS Free:" + ESPResponseStream::formatBytes(SPIFFS.totalBytes() - SPIFFS.usedBytes());
         ssd += " Used:" + ESPResponseStream::formatBytes(SPIFFS.usedBytes());
         ssd += " Total:" + ESPResponseStream::formatBytes(SPIFFS.totalBytes());
@@ -857,10 +883,10 @@ namespace WebUI {
         const char* resp = "No SD card";
 #ifdef ENABLE_SD_CARD
         switch (get_sd_state(true)) {
-            case SDCARD_IDLE:
+            case SDState::Idle:
                 resp = "SD card detected";
                 break;
-            case SDCARD_NOT_PRESENT:
+            case SDState::NotPresent:
                 resp = "No SD card";
                 break;
             default:
@@ -868,7 +894,7 @@ namespace WebUI {
         }
 #else
         resp = "SD card not enabled";
-#endif        
+#endif
         webPrintln(resp);
         return Error::Ok;
     }
@@ -1025,7 +1051,7 @@ namespace WebUI {
         // WU - need user or admin password to set
         // WA - need admin password to set
 #ifdef WEB_COMMON
-        new WebCommand(NULL, WEBCMD, WG, "ESP800", "Firmware/Info", showFwInfo);
+        new WebCommand(NULL, WEBCMD, WG, "ESP800", "Firmware/Info", showFwInfo, anyState);
         new WebCommand(NULL, WEBCMD, WU, "ESP720", "LocalFS/Size", SPIFFSSize);
         new WebCommand("FORMAT", WEBCMD, WA, "ESP710", "LocalFS/Format", formatSpiffs);
         new WebCommand("path", WEBCMD, WU, "ESP701", "LocalFS/Show", showLocalFile);
@@ -1043,14 +1069,14 @@ namespace WebUI {
 #endif
 #ifdef WEB_COMMON
         new WebCommand("RESTART", WEBCMD, WA, "ESP444", "System/Control", setSystemMode);
-        new WebCommand(NULL, WEBCMD, WU, "ESP420", "System/Stats", showSysStats);
+        new WebCommand(NULL, WEBCMD, WU, "ESP420", "System/Stats", showSysStats, anyState);
 #endif
 #ifdef ENABLE_WIFI
         new WebCommand(NULL, WEBCMD, WU, "ESP410", "WiFi/ListAPs", listAPs);
 #endif
 #ifdef WEB_COMMON
         new WebCommand("P=position T=type V=value", WEBCMD, WA, "ESP401", "WebUI/Set", setWebSetting);
-        new WebCommand(NULL, WEBCMD, WU, "ESP400", "WebUI/List", listSettings);
+        new WebCommand(NULL, WEBCMD, WU, "ESP400", "WebUI/List", listSettings, anyState);
 #endif
 #ifdef ENABLE_SD_CARD
         new WebCommand("path", WEBCMD, WU, "ESP221", "SD/Show", showSDFile);
@@ -1067,8 +1093,8 @@ namespace WebUI {
         new WebCommand("IP=ipaddress MSK=netmask GW=gateway", WEBCMD, WA, "ESP103", "Sta/Setup", showSetStaParams);
 #endif
 #ifdef WEB_COMMON
-        new WebCommand(NULL, WEBCMD, WG, "ESP0", "WebUI/Help", showWebHelp);
-        new WebCommand(NULL, WEBCMD, WG, "ESP", "WebUI/Help", showWebHelp);
+        new WebCommand(NULL, WEBCMD, WG, "ESP0", "WebUI/Help", showWebHelp, anyState);
+        new WebCommand(NULL, WEBCMD, WG, "ESP", "WebUI/Help", showWebHelp, anyState);
 #endif
         // WebUI Settings
         // Standard WEBUI authentication is user+ to get, admin to set unless otherwise specified

@@ -21,6 +21,7 @@
 
 #include "Motor.h"
 #include "StandardStepper.h"
+#include "../Uart.h"
 
 #include <TMCStepper.h>  // https://github.com/teemuatlut/TMCStepper
 
@@ -63,7 +64,7 @@ const double TRINAMIC_UART_FCLK = 12700000.0;  // Internal clock Approx (Hz) use
 #    define TMC_UART_TX UNDEFINED_PIN
 #endif
 
-extern HardwareSerial tmc_serial;
+extern Uart tmc_serial;
 
 namespace Motors {
 
@@ -75,6 +76,9 @@ namespace Motors {
     };
 
     class TrinamicUartDriver : public StandardStepper {
+    private:
+        static bool _uart_started;
+
     public:
         TrinamicUartDriver(uint8_t  axis_index,
                            uint8_t  step_pin,
@@ -98,7 +102,7 @@ namespace Motors {
     private:
         uint32_t calc_tstep(float speed, float percent);  //TODO: see if this is useful/used.
 
-        TMC2208Stepper*  tmcstepper;  // all other driver types are subclasses of this one
+        TMC2209Stepper*  tmcstepper;  // all other driver types are subclasses of this one
         TrinamicUartMode _homing_mode;
         uint16_t         _driver_part_number;  // example: use 2209 for TMC2209
         float            _r_sense;
