@@ -95,10 +95,10 @@ const int MAX_N_AXIS = 6;
 #define BAUD_RATE 115200
 
 //Connect to your local AP with these credentials
-//#define CONNECT_TO_SSID  "your SSID"
-//#define SSID_PASSWORD  "your SSID password"
+#define CONNECT_TO_SSID  "Iglu"
+#define SSID_PASSWORD  "2Pinguine!:)"
 //CONFIGURE_EYECATCH_BEGIN (DO NOT MODIFY THIS LINE)
-#define ENABLE_BLUETOOTH  // enable bluetooth
+//#define ENABLE_BLUETOOTH  // enable bluetooth
 
 #define ENABLE_SD_CARD  // enable use of SD Card to run jobs
 
